@@ -344,6 +344,10 @@ where point is just after the inner call."
     (cons (odineval-current-line-code)
           (cons (line-beginning-position) (line-end-position)))))
 
+(defun odineval-current-line-bounds ()
+  "Return bounds of the current line."
+  (cons (line-beginning-position) (line-end-position)))
+
 (defun odineval-current-unit ()
   "Return (CODE . BOUNDS) for the current eval unit.
 When point is inside a scratch // block, the unit is the whole block.
@@ -396,7 +400,7 @@ With prefix argument NO-PRINT, treat the line as statements."
                    odineval-show-generated
                    t
                    'inline
-                   (cdr unit))))
+                   (odineval-current-line-bounds))))
 
 ;;;###autoload
 (defun odineval-insert-line-result (&optional no-print)
@@ -497,7 +501,7 @@ This is the Odin analogue of keeping exploratory calls in a Clojure
                  odineval-show-generated
                  t
                  'inline
-                 (odineval--comment-block-bounds)))
+                 (odineval-current-line-bounds)))
 
 ;;;###autoload
 (defun odineval-check-comment-block (&optional no-print)
