@@ -202,6 +202,34 @@ Two modes matter:
 External eval is the first milestone. Internal eval is likely the feature that
 will make the tool feel closest to Lisp-style interactive development.
 
+## Future Considerations
+
+The current MVP is good enough to use while learning Odin. Prefer using it for a
+while before adding more surface area; real friction should drive the next
+features.
+
+Likely useful adjacent work:
+
+- Test at point: detect the surrounding `@(test)` procedure and run only that
+  test via `-define:ODIN_TEST_NAMES=package.test_name`.
+- Multi-package project commands: discover package directories and run
+  `odin check` or `odin test` across them, instead of assuming the project root
+  itself is a buildable package.
+- Failure navigation: parse Odin compiler output into Emacs compilation-mode or
+  xref-friendly locations so `next-error` jumps directly to failures.
+- Result cleanup: remove generated `// =>` result comments from a buffer or
+  selected region.
+- Documentation-at-point: keep this in the Odin/OLS Emacs setup rather than
+  odineval. Bind commands such as `eglot-help-at-point` or `eldoc-doc-buffer`
+  for hover/docs buffers.
+- Learning examples: keep a small Odin scratch/example project covering
+  arrays, slices, maps, allocators, errors, tests, `defer`, structs, enums, and
+  procedure groups.
+
+The main Odin learning axis is allocation and ownership. Eval is useful for
+quick feedback, but returned maps, slices, strings, and allocator-backed helpers
+still need explicit lifetime thinking.
+
 ## Non-Goals
 
 - Do not interpret Odin.
