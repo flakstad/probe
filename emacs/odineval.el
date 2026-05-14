@@ -48,6 +48,11 @@
   :type 'boolean
   :group 'odineval)
 
+(defcustom odineval-test-after-build nil
+  "When non-nil, run `odin test .' after a successful package build."
+  :type 'boolean
+  :group 'odineval)
+
 (defvar odineval--last-source-buffer nil)
 
 (defun odineval-clear-inline-results ()
@@ -79,6 +84,10 @@ For Odin this is usually the directory containing the current file."
   (if buffer-file-name
       (file-name-directory (expand-file-name buffer-file-name))
     default-directory))
+
+(defun odineval-project-directory ()
+  "Return the current Odin project directory."
+  (file-name-as-directory (odineval--project-root)))
 
 (defun odineval--cli-args (command package code &optional no-print show internal)
   "Return odineval CLI args for COMMAND, PACKAGE, and CODE."
@@ -552,28 +561,145 @@ With prefix argument NO-PRINT, treat the code as statements."
                  t
                  'buffer))
 
-(defun odineval--compile-in-package (command)
-  "Run Odin COMMAND in the current package directory via `compile'."
-  (let ((default-directory (file-name-as-directory (odineval-package-directory))))
-    (compile command)))
+(defun odineval--command-buffer (directory)
+  "Return the command output buffer for DIRECTORY."
+  (let ((buffer (get-buffer-create odineval-result-buffer-name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "$ cd %s\n" (abbreviate-file-name directory))))
+      (special-mode)
+      (setq-local truncate-lines nil)
+      (setq-local word-wrap t)
+      (visual-line-mode 1))
+    buffer))
+
+(defun odineval--compact-command-output (stdout stderr)
+  "Return compact one-line command output from STDOUT and STDERR."
+  (let ((output (string-trim
+                 (concat stdout
+                         (unless (or (string-empty-p stdout)
+                                     (string-empty-p stderr))
+                           "\n")
+                         stderr))))
+    (replace-regexp-in-string "[\n\r\t ]+" " " output)))
+
+(defun odineval--run-odin-command (directory command &optional on-success show-output-on-success)
+  "Run Odin COMMAND in DIRECTORY.
+Show `odineval-result-buffer-name' only on failure. Run ON-SUCCESS on exit 0.
+When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
+  (let* ((directory (file-name-as-directory (expand-file-name directory)))
+         (buffer (odineval--command-buffer directory))
+         (stdout-buffer (generate-new-buffer " *odineval-command-stdout*"))
+         (stderr-buffer (generate-new-buffer " *odineval-command-stderr*")))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (goto-char (point-max))
+        (insert (format "$ %s\n\n" command))))
+    (let ((default-directory directory))
+      (make-process
+       :name "odineval-command"
+       :buffer stdout-buffer
+       :stderr stderr-buffer
+       :command (list shell-file-name shell-command-switch command)
+       :connection-type 'pipe
+       :noquery t
+       :sentinel
+       (lambda (process _event)
+         (when (memq (process-status process) '(exit signal))
+           (let ((exit-code (process-exit-status process))
+                 (stdout (with-current-buffer stdout-buffer
+                           (buffer-substring-no-properties (point-min) (point-max))))
+                 (stderr (with-current-buffer stderr-buffer
+                           (buffer-substring-no-properties (point-min) (point-max)))))
+             (when (buffer-live-p stdout-buffer) (kill-buffer stdout-buffer))
+             (when (buffer-live-p stderr-buffer) (kill-buffer stderr-buffer))
+             (with-current-buffer buffer
+               (let ((inhibit-read-only t))
+                 (goto-char (point-max))
+                 (unless (string-empty-p stdout)
+                   (insert stdout)
+                   (unless (string-suffix-p "\n" stdout) (insert "\n")))
+                 (unless (string-empty-p stderr)
+                   (insert stderr)
+                   (unless (string-suffix-p "\n" stderr) (insert "\n")))))
+             (if (zerop exit-code)
+                 (progn
+                   (let ((compact-output (odineval--compact-command-output stdout stderr)))
+                     (message "%s"
+                              (if (and show-output-on-success
+                                       (not (string-empty-p compact-output)))
+                                  compact-output
+                                (format "%s: ok" command))))
+                   (when on-success (funcall on-success)))
+               (display-buffer buffer)
+               (message "%s: failed" command)))))))))
+
+(defun odineval--odin-in-package (command &optional on-success show-output-on-success)
+  "Run Odin COMMAND in the current package directory."
+  (odineval--run-odin-command (odineval-package-directory) command on-success show-output-on-success))
+
+(defun odineval--odin-in-project (command &optional on-success show-output-on-success)
+  "Run Odin COMMAND in the current project directory."
+  (odineval--run-odin-command (odineval-project-directory) command on-success show-output-on-success))
 
 ;;;###autoload
 (defun odineval-run-package ()
   "Run `odin run .' in the current Odin package directory."
   (interactive)
-  (odineval--compile-in-package "odin run ."))
+  (odineval--odin-in-package "odin run ."))
 
 ;;;###autoload
 (defun odineval-build-package ()
   "Run `odin build .' in the current Odin package directory."
   (interactive)
-  (odineval--compile-in-package "odin build ."))
+  (odineval--odin-in-package
+   "odin build ."
+   (when odineval-test-after-build
+     (lambda () (odineval-test-package)))))
 
 ;;;###autoload
 (defun odineval-check-package ()
   "Run `odin check .' in the current Odin package directory."
   (interactive)
-  (odineval--compile-in-package "odin check ."))
+  (odineval--odin-in-package "odin check ."))
+
+;;;###autoload
+(defun odineval-test-package ()
+  "Run `odin test .' in the current Odin package directory."
+  (interactive)
+  (odineval--odin-in-package "odin test ." nil t))
+
+;;;###autoload
+(defun odineval-run-project ()
+  "Run `odin run .' in the current Odin project directory."
+  (interactive)
+  (odineval--odin-in-project "odin run ."))
+
+;;;###autoload
+(defun odineval-build-project ()
+  "Run `odin build .' in the current Odin project directory."
+  (interactive)
+  (odineval--odin-in-project "odin build ."))
+
+;;;###autoload
+(defun odineval-check-project ()
+  "Run `odin check .' in the current Odin project directory."
+  (interactive)
+  (odineval--odin-in-project "odin check ."))
+
+;;;###autoload
+(defun odineval-test-project ()
+  "Run `odin test .' in the current Odin project directory."
+  (interactive)
+  (odineval--odin-in-project "odin test ." nil t))
+
+;;;###autoload
+(defun odineval-toggle-test-after-build ()
+  "Toggle running `odin test .' after successful package builds."
+  (interactive)
+  (setq odineval-test-after-build (not odineval-test-after-build))
+  (message "odineval-test-after-build: %s" odineval-test-after-build))
 
 ;;;###autoload
 (defun odineval-run-proc (name args)
@@ -623,7 +749,9 @@ With prefix argument NO-PRINT, treat the code as statements."
   (local-set-key (kbd "C-c C-x") #'odineval-run-comment-block)
   (local-set-key (kbd "C-c C-k") #'odineval-check-expression)
   (local-set-key (kbd "C-c C-a") #'odineval-run-package)
-  (local-set-key (kbd "C-c C-v") #'odineval-build-package)
+  (local-set-key (kbd "C-c C-b") #'odineval-build-package)
+  (local-set-key (kbd "C-c C-v") #'odineval-check-package)
+  (local-set-key (kbd "C-c C-t") #'odineval-test-package)
   (local-set-key (kbd "C-c C-s") #'odineval-toggle-show-generated)
   (local-set-key (kbd "C-c C-z") #'odineval-switch-to-result))
 

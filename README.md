@@ -61,6 +61,7 @@ Standard Odin package commands:
 python3 -m src.odineval package-run /path/to/package
 python3 -m src.odineval package-build /path/to/package
 python3 -m src.odineval package-check /path/to/package
+python3 -m src.odineval package-test /path/to/package
 ```
 
 ## Emacs
@@ -90,6 +91,12 @@ Default commands:
 - `M-x odineval-run-package`: run ordinary `odin run .` in the current package
 - `M-x odineval-build-package`: run ordinary `odin build .` in the current package
 - `M-x odineval-check-package`: run ordinary `odin check .` in the current package
+- `M-x odineval-test-package`: run ordinary `odin test .` in the current package
+- `M-x odineval-run-project`: run ordinary `odin run .` at the detected project root
+- `M-x odineval-build-project`: run ordinary `odin build .` at the detected project root
+- `M-x odineval-check-project`: run ordinary `odin check .` at the detected project root
+- `M-x odineval-test-project`: run ordinary `odin test .` at the detected project root
+- `M-x odineval-toggle-test-after-build`: optionally test after successful package builds
 - `M-x odineval-toggle-show-generated`: also show generated Odin
 
 Default `odin-mode` keys installed by `odineval-setup-odin-mode-keys`:
@@ -102,12 +109,34 @@ Default `odin-mode` keys installed by `odineval-setup-odin-mode-keys`:
 - `C-c C-x`: run uncommented `//` block at point
 - `C-c C-k`: check prompted expression
 - `C-c C-a`: run ordinary package main via `odin run .`
-- `C-c C-v`: build ordinary package via `odin build .`
+- `C-c C-b`: build ordinary package via `odin build .`
+- `C-c C-v`: check ordinary package via `odin check .`
+- `C-c C-t`: test ordinary package via `odin test .`
 - `C-c C-s`: toggle generated Odin display
 - `C-c C-z`: switch to result buffer
 
+Build/check/test commands only open `*Odin Eval*` on failure. On success they
+report in the minibuffer and leave your window layout alone. Test commands are
+an exception in one useful way: successful `odin test .` output is compacted and
+shown in the minibuffer, because the test runner's summary is the result you
+usually want to see.
+
 The package directory defaults to the directory of the current `.odin` file.
-That matches Odin's package model for the external-eval MVP.
+That matches Odin's package model for the external-eval MVP. The project
+directory is detected by walking up to `ols.json`, `odin.json`, or `.git`,
+falling back to the current package directory.
+
+Odin has tests out of the box via `odin test .`. Test procedures use Odin's
+test attribute, for example:
+
+```odin
+import "core:testing"
+
+@(test)
+sample_test :: proc(t: ^testing.T) {
+    testing.expect_value(t, 2 + 2, 4)
+}
+```
 
 For Clojure-style scratch calls, keep ordinary Odin calls commented out and eval
 the comment block:

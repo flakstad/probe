@@ -227,6 +227,38 @@ class OdinIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "ordinary main")
 
+    def test_package_test_invokes_odin_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pkg = root / "app"
+            pkg.mkdir()
+            (pkg / "app.odin").write_text(
+                textwrap.dedent(
+                    """\
+                    package sample
+
+                    import "core:testing"
+
+                    @(test)
+                    sample_test :: proc(t: ^testing.T) {
+                        testing.expect_value(t, 2 + 2, 4)
+                    }
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                ["python3", "-m", "src.odineval", "package-test", str(pkg)],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

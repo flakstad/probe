@@ -269,7 +269,12 @@ def build_parser() -> argparse.ArgumentParser:
             help='Extra raw Odin import line, e.g. \'import "core:strings"\'.',
         )
 
-    for name, action in (("package-run", "run"), ("package-build", "build"), ("package-check", "check")):
+    for name, action in (
+        ("package-run", "run"),
+        ("package-build", "build"),
+        ("package-check", "check"),
+        ("package-test", "test"),
+    ):
         p = subparsers.add_parser(name)
         p.set_defaults(odin_action=action)
         p.add_argument("package", help=f"Path to the Odin package to `{action}`.")
@@ -290,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
         return command_eval(args, "run")
     if args.command == "check":
         return command_eval(args, "check")
-    if args.command in {"package-run", "package-build", "package-check"}:
+    if args.command in {"package-run", "package-build", "package-check", "package-test"}:
         return command_package(args, args.odin_action)
 
     parser.error(f"unknown command: {args.command}")
