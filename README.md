@@ -55,6 +55,56 @@ To check without running:
 python3 -m src.odineval check /path/to/package 'target.some_proc()'
 ```
 
+## Emacs
+
+The repo includes a small Emacs integration at `emacs/odineval.el`. It uses the
+local Python CLI and displays command output in `*Odin Eval*`.
+
+Minimal setup:
+
+```elisp
+(add-to-list 'load-path "/Users/andreas/Projects/odineval/emacs")
+(require 'odineval)
+
+;; If you use odin-mode:
+(add-hook 'odin-mode-hook #'odineval-setup-odin-mode-keys)
+```
+
+Default commands:
+
+- `M-x odineval-run-expression`: prompt for an Odin expression and print result
+- `M-x odineval-run-region`: run selected expression; with prefix, run as statements
+- `M-x odineval-check-expression`: compile-check a generated runner
+- `M-x odineval-run-comment-block`: run a contiguous `//` comment block as code
+- `M-x odineval-run-proc`: call `target.<proc>(<args>)`
+- `M-x odineval-run-proc-no-args`: call `target.<symbol-at-point>()`
+- `M-x odineval-toggle-show-generated`: also show generated Odin
+
+Default `odin-mode` keys installed by `odineval-setup-odin-mode-keys`:
+
+- `C-c C-e`: run prompted expression
+- `C-c C-r`: run region
+- `C-c C-c`: run proc
+- `C-c C-x`: run uncommented `//` block at point
+- `C-c C-k`: check prompted expression
+- `C-c C-s`: toggle generated Odin display
+- `C-c C-z`: switch to result buffer
+
+The package directory defaults to the directory of the current `.odin` file.
+That matches Odin's package model for the external-eval MVP.
+
+For Clojure-style scratch calls, keep ordinary Odin calls commented out and eval
+the comment block:
+
+```odin
+// target.answer()
+// target.some_proc(1, 2)
+```
+
+Place point on either line and run `M-x odineval-run-comment-block` or
+`C-c C-x`. With a prefix argument, the block is treated as statements and
+`--no-print` is passed to the CLI.
+
 ## Direction
 
 Two modes matter:
@@ -74,4 +124,3 @@ will make the tool feel closest to Lisp-style interactive development.
 - Do not invent dynamic state or a hidden runtime.
 - Do not require a custom Odin syntax.
 - Do not hide compiler errors. Generated Odin should be inspectable.
-

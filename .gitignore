@@ -1,4 +1,4 @@
 .odineval/
 __pycache__/
 *.pyc
-
+*.elc
