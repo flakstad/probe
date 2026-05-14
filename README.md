@@ -55,6 +55,14 @@ To check without running:
 python3 -m src.odineval check /path/to/package 'target.some_proc()'
 ```
 
+Standard Odin package commands:
+
+```sh
+python3 -m src.odineval package-run /path/to/package
+python3 -m src.odineval package-build /path/to/package
+python3 -m src.odineval package-check /path/to/package
+```
+
 ## Emacs
 
 The repo includes a small Emacs integration at `emacs/odineval.el`. It uses the
@@ -79,15 +87,21 @@ Default commands:
 - `M-x odineval-run-comment-block`: run a contiguous `//` comment block as code
 - `M-x odineval-run-proc`: call `target.<proc>(<args>)`
 - `M-x odineval-run-proc-no-args`: call `target.<symbol-at-point>()`
+- `M-x odineval-run-package`: run ordinary `odin run .` in the current package
+- `M-x odineval-build-package`: run ordinary `odin build .` in the current package
+- `M-x odineval-check-package`: run ordinary `odin check .` in the current package
 - `M-x odineval-toggle-show-generated`: also show generated Odin
 
 Default `odin-mode` keys installed by `odineval-setup-odin-mode-keys`:
 
-- `C-c C-e`: run current line, stripping leading `//`
+- `C-c C-e`: run current line, stripping leading `//`, and show result inline
+- `C-c C-p`: run current line and open the result buffer
 - `C-c C-r`: run region
 - `C-c C-c`: run proc
 - `C-c C-x`: run uncommented `//` block at point
 - `C-c C-k`: check prompted expression
+- `C-c C-a`: run ordinary package main via `odin run .`
+- `C-c C-v`: build ordinary package via `odin build .`
 - `C-c C-s`: toggle generated Odin display
 - `C-c C-z`: switch to result buffer
 

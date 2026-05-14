@@ -141,6 +141,16 @@ def run_odin(action: str, runner_dir: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_odin_package(action: str, package: Path, extra_args: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["odin", action, str(package), *extra_args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
 def command_eval(args: argparse.Namespace, action: str) -> int:
     package = Path(args.package)
     if not package.exists():
@@ -174,6 +184,20 @@ def command_eval(args: argparse.Namespace, action: str) -> int:
         return result.returncode
 
 
+def command_package(args: argparse.Namespace, action: str) -> int:
+    package = Path(args.package)
+    if not package.exists():
+        print(f"package path does not exist: {package}", file=sys.stderr)
+        return 2
+
+    result = run_odin_package(action, package, tuple(args.odin_args or ()))
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="odineval")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -197,6 +221,12 @@ def build_parser() -> argparse.ArgumentParser:
             help='Extra raw Odin import line, e.g. \'import "core:strings"\'.',
         )
 
+    for name, action in (("package-run", "run"), ("package-build", "build"), ("package-check", "check")):
+        p = subparsers.add_parser(name)
+        p.set_defaults(odin_action=action)
+        p.add_argument("package", help=f"Path to the Odin package to `{action}`.")
+        p.add_argument("odin_args", nargs=argparse.REMAINDER, help="Additional arguments passed to Odin.")
+
     return parser
 
 
@@ -212,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_eval(args, "run")
     if args.command == "check":
         return command_eval(args, "check")
+    if args.command in {"package-run", "package-build", "package-check"}:
+        return command_package(args, args.odin_action)
 
     parser.error(f"unknown command: {args.command}")
     return 2

@@ -27,6 +27,11 @@
   :type 'string
   :group 'odineval)
 
+(defcustom odineval-inline-result-prefix "=> "
+  "Prefix used for inline odineval result overlays."
+  :type 'string
+  :group 'odineval)
+
 (defcustom odineval-runner-buffer-name "*Odin Eval Generated*"
   "Buffer name used for generated Odin when `odineval-show-generated' is non-nil."
   :type 'string
@@ -43,6 +48,14 @@
   :group 'odineval)
 
 (defvar odineval--last-source-buffer nil)
+
+(defun odineval-clear-inline-results ()
+  "Delete odineval inline result overlays in the current buffer."
+  (remove-overlays (point-min) (point-max) 'odineval-result-overlay t))
+
+(defun odineval--enable-inline-result-clearing ()
+  "Clear odineval inline overlays before the next command in this buffer."
+  (add-hook 'pre-command-hook #'odineval-clear-inline-results nil t))
 
 (defun odineval--project-root (&optional start)
   "Return a likely Odin project root for START or the current buffer."
@@ -99,41 +112,78 @@ treated as command output."
           (cons nil text)))
     (cons nil text)))
 
+(defun odineval--visible-output (stdout stderr show-generated)
+  "Return (GENERATED . VISIBLE-OUTPUT) from STDOUT and STDERR."
+  (let* ((split (and show-generated (odineval--split-generated-output stdout)))
+         (generated (car-safe split))
+         (visible-stdout (if split (cdr split) stdout))
+         (visible (string-trim
+                   (concat visible-stdout
+                           (unless (or (string-empty-p visible-stdout)
+                                       (string-empty-p stderr))
+                             "\n")
+                           stderr))))
+    (cons generated visible)))
+
+(defun odineval--show-inline-result (buffer beg end text exit-code)
+  "Show TEXT inline in BUFFER after BEG and END."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (remove-overlays beg end 'odineval-result-overlay t)
+      (let* ((trimmed (string-trim text))
+             (display-text (if (string-empty-p trimmed)
+                               (format " %s<exit %s>" odineval-inline-result-prefix exit-code)
+                             (format " %s%s" odineval-inline-result-prefix
+                                     (replace-regexp-in-string "[\n\r\t ]+" " " trimmed))))
+             (ov (make-overlay beg end)))
+        (put-text-property 0 1 'cursor 0 display-text)
+        (put-text-property 0 (length display-text) 'face
+                           (if (zerop exit-code) 'shadow 'error)
+                           display-text)
+        (overlay-put ov 'odineval-result-overlay t)
+        (overlay-put ov 'priority 1000)
+        (overlay-put ov 'evaporate t)
+        (overlay-put ov 'after-string display-text)))))
+
+(defun odineval--display-generated (generated)
+  "Display GENERATED Odin in a separate buffer when non-nil."
+  (when generated
+    (let ((runner-buffer (odineval--prepare-buffer odineval-runner-buffer-name)))
+      (with-current-buffer runner-buffer
+        (let ((inhibit-read-only t))
+          (insert generated)
+          (when (fboundp 'odin-mode)
+            (odin-mode))))
+      (display-buffer runner-buffer))))
+
 (defun odineval--display-output (stdout stderr exit-code show-generated)
   "Display STDOUT and STDERR with EXIT-CODE.
 When SHOW-GENERATED is non-nil, split generated Odin into a separate buffer when
 possible."
-  (let* ((split (and show-generated (odineval--split-generated-output stdout)))
-         (generated (car-safe split))
-         (visible-stdout (if split (cdr split) stdout))
+  (let* ((visible-data (odineval--visible-output stdout stderr show-generated))
+         (generated (car visible-data))
+         (visible (cdr visible-data))
          (result-buffer (odineval--prepare-buffer odineval-result-buffer-name)))
-    (when generated
-      (let ((runner-buffer (odineval--prepare-buffer odineval-runner-buffer-name)))
-        (with-current-buffer runner-buffer
-          (let ((inhibit-read-only t))
-            (insert generated)
-            (when (fboundp 'odin-mode)
-              (odin-mode))))
-        (display-buffer runner-buffer)))
+    (odineval--display-generated generated)
     (with-current-buffer result-buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert (format "$ odineval exited %s\n\n" exit-code))
-        (unless (string-empty-p visible-stdout)
-          (insert visible-stdout)
-          (unless (string-suffix-p "\n" visible-stdout)
+        (unless (string-empty-p visible)
+          (insert visible)
+          (unless (string-suffix-p "\n" visible)
             (insert "\n")))
-        (unless (string-empty-p stderr)
-          (insert "\n[stderr]\n")
-          (insert stderr))
         (goto-char (point-min))))
     (display-buffer result-buffer)
     (message "odineval exited %s" exit-code)))
 
-(defun odineval--run (command package code &optional no-print show internal)
+(defun odineval--run (command package code &optional no-print show internal display)
   "Run odineval COMMAND for PACKAGE and CODE."
   (setq odineval--last-source-buffer (current-buffer))
-  (let* ((default-directory (file-name-as-directory (expand-file-name odineval-root)))
+  (let* ((source-buffer (current-buffer))
+         (bounds (and (eq display 'inline)
+                      (cons (line-beginning-position) (line-end-position))))
+         (default-directory (file-name-as-directory (expand-file-name odineval-root)))
          (stdout-buffer (generate-new-buffer " *odineval-stdout*"))
          (stderr-buffer (generate-new-buffer " *odineval-stderr*"))
          (args (odineval--cli-args command package code no-print show internal)))
@@ -153,7 +203,16 @@ possible."
                          (buffer-substring-no-properties (point-min) (point-max)))))
            (when (buffer-live-p stdout-buffer) (kill-buffer stdout-buffer))
            (when (buffer-live-p stderr-buffer) (kill-buffer stderr-buffer))
-           (odineval--display-output stdout stderr exit-code show)))))))
+           (pcase display
+             ('inline
+              (let* ((visible-data (odineval--visible-output stdout stderr show))
+                     (generated (car visible-data))
+                     (visible (cdr visible-data)))
+                (odineval--display-generated generated)
+                (odineval--show-inline-result source-buffer (car bounds) (cdr bounds) visible exit-code)
+                (message "odineval exited %s" exit-code)))
+             (_
+              (odineval--display-output stdout stderr exit-code show)))))))))
 
 (defun odineval-read-code ()
   "Read an Odin expression from the minibuffer, defaulting to symbol at point."
@@ -216,7 +275,8 @@ possible."
                  code
                  odineval-default-no-print
                  odineval-show-generated
-                 nil))
+                 nil
+                 'buffer))
 
 ;;;###autoload
 (defun odineval-check-expression (code)
@@ -227,7 +287,8 @@ possible."
                  code
                  odineval-default-no-print
                  odineval-show-generated
-                 nil))
+                 nil
+                 'buffer))
 
 ;;;###autoload
 (defun odineval-run-line (&optional no-print)
@@ -244,7 +305,20 @@ With prefix argument NO-PRINT, treat the line as statements."
                  (odineval-current-line-code)
                  (or no-print odineval-default-no-print)
                  odineval-show-generated
-                 t))
+                 t
+                 'inline))
+
+;;;###autoload
+(defun odineval-popup-line (&optional no-print)
+  "Run the current line and show output in the odineval result buffer."
+  (interactive "P")
+  (odineval--run "run"
+                 (odineval-package-directory)
+                 (odineval-current-line-code)
+                 (or no-print odineval-default-no-print)
+                 odineval-show-generated
+                 t
+                 'buffer))
 
 ;;;###autoload
 (defun odineval-check-line (&optional no-print)
@@ -256,7 +330,8 @@ If the line starts with `//`, strip the comment prefix first."
                  (odineval-current-line-code)
                  (or no-print odineval-default-no-print)
                  odineval-show-generated
-                 t))
+                 t
+                 'buffer))
 
 ;;;###autoload
 (defun odineval-run-region (start end &optional no-print)
@@ -268,7 +343,8 @@ With prefix argument NO-PRINT, treat the region as statements."
                  (buffer-substring-no-properties start end)
                  (or no-print odineval-default-no-print)
                  odineval-show-generated
-                 nil))
+                 nil
+                 'buffer))
 
 ;;;###autoload
 (defun odineval-check-region (start end &optional no-print)
@@ -280,7 +356,8 @@ With prefix argument NO-PRINT, treat the region as statements."
                  (buffer-substring-no-properties start end)
                  (or no-print odineval-default-no-print)
                  odineval-show-generated
-                 nil))
+                 nil
+                 'buffer))
 
 ;;;###autoload
 (defun odineval-run-comment-block (&optional no-print)
@@ -298,7 +375,8 @@ This is the Odin analogue of keeping exploratory calls in a Clojure
                  (odineval-comment-block-code)
                  (or no-print odineval-default-no-print)
                  odineval-show-generated
-                 t))
+                 t
+                 'buffer))
 
 ;;;###autoload
 (defun odineval-check-comment-block (&optional no-print)
@@ -310,7 +388,31 @@ With prefix argument NO-PRINT, treat the code as statements."
                  (odineval-comment-block-code)
                  (or no-print odineval-default-no-print)
                  odineval-show-generated
-                 t))
+                 t
+                 'buffer))
+
+(defun odineval--compile-in-package (command)
+  "Run Odin COMMAND in the current package directory via `compile'."
+  (let ((default-directory (file-name-as-directory (odineval-package-directory))))
+    (compile command)))
+
+;;;###autoload
+(defun odineval-run-package ()
+  "Run `odin run .' in the current Odin package directory."
+  (interactive)
+  (odineval--compile-in-package "odin run ."))
+
+;;;###autoload
+(defun odineval-build-package ()
+  "Run `odin build .' in the current Odin package directory."
+  (interactive)
+  (odineval--compile-in-package "odin build ."))
+
+;;;###autoload
+(defun odineval-check-package ()
+  "Run `odin check .' in the current Odin package directory."
+  (interactive)
+  (odineval--compile-in-package "odin check ."))
 
 ;;;###autoload
 (defun odineval-run-proc (name args)
@@ -351,11 +453,15 @@ With prefix argument NO-PRINT, treat the code as statements."
 
 (defun odineval-setup-odin-mode-keys ()
   "Install odineval keybindings in the current Odin buffer."
+  (odineval--enable-inline-result-clearing)
   (local-set-key (kbd "C-c C-e") #'odineval-run-line)
+  (local-set-key (kbd "C-c C-p") #'odineval-popup-line)
   (local-set-key (kbd "C-c C-r") #'odineval-run-region)
   (local-set-key (kbd "C-c C-c") #'odineval-run-proc)
   (local-set-key (kbd "C-c C-x") #'odineval-run-comment-block)
   (local-set-key (kbd "C-c C-k") #'odineval-check-expression)
+  (local-set-key (kbd "C-c C-a") #'odineval-run-package)
+  (local-set-key (kbd "C-c C-v") #'odineval-build-package)
   (local-set-key (kbd "C-c C-s") #'odineval-toggle-show-generated)
   (local-set-key (kbd "C-c C-z") #'odineval-switch-to-result))
 
