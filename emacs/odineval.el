@@ -80,10 +80,23 @@ showing warnings, errors, and the final test summary."
          (dir (if (and path (file-directory-p path))
                   path
                 (file-name-directory (expand-file-name path)))))
-    (or (locate-dominating-file dir "ols.json")
-        (locate-dominating-file dir "odin.json")
-        (locate-dominating-file dir ".git")
-        dir)))
+    (let ((find-entry-point-dir
+           (lambda (directory)
+             (let ((current (file-name-as-directory (expand-file-name directory)))
+                   (found nil))
+               (while (and current (not found))
+                 (when (odineval--directory-has-entry-point-p current)
+                   (setq found current))
+                 (let ((parent (file-name-directory (directory-file-name current))))
+                   (if (or (null parent) (string= parent current))
+                       (setq current nil)
+                     (setq current parent))))
+               found))))
+      (or (locate-dominating-file dir "ols.json")
+          (locate-dominating-file dir "odin.json")
+          (funcall find-entry-point-dir dir)
+          (locate-dominating-file dir ".git")
+          dir))))
 
 (defun odineval-package-directory ()
   "Return the Odin package directory for the current buffer.
@@ -91,6 +104,24 @@ For Odin this is usually the directory containing the current file."
   (if buffer-file-name
       (file-name-directory (expand-file-name buffer-file-name))
     default-directory))
+
+(defun odineval--directory-has-entry-point-p (directory)
+  "Return non-nil when DIRECTORY contains a package `main` with `main :: proc`."
+  (seq-some
+   (lambda (path)
+     (with-temp-buffer
+       (insert-file-contents path)
+       (and (re-search-forward "^[[:space:]]*package[[:space:]]+main\\b" nil t)
+            (re-search-forward "^[[:space:]]*main[[:space:]]*::[[:space:]]*proc\\b" nil t))))
+   (directory-files directory t "\\.odin\\'")))
+
+(defun odineval--build-package-directory ()
+  "Return a package directory that can be compiled or checked.
+Prefer the current package if it has an Odin entry point, otherwise walk upward
+to the nearest ancestor package that does."
+  (or (and (odineval--directory-has-entry-point-p (odineval-package-directory))
+           (odineval-package-directory))
+      (odineval--project-root)))
 
 (defun odineval-project-directory ()
   "Return the current Odin project directory."
@@ -646,6 +677,10 @@ When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
   "Run Odin COMMAND in the current package directory."
   (odineval--run-odin-command (odineval-package-directory) command on-success show-output-on-success))
 
+(defun odineval--odin-in-buildable-package (command &optional on-success show-output-on-success)
+  "Run Odin COMMAND in the nearest runnable package directory."
+  (odineval--run-odin-command (odineval--build-package-directory) command on-success show-output-on-success))
+
 (defun odineval--odin-in-project (command &optional on-success show-output-on-success)
   "Run Odin COMMAND in the current project directory."
   (odineval--run-odin-command (odineval-project-directory) command on-success show-output-on-success))
@@ -660,7 +695,7 @@ When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
 (defun odineval-build-package ()
   "Run `odin build .' in the current Odin package directory."
   (interactive)
-  (odineval--odin-in-package
+  (odineval--odin-in-buildable-package
    "odin build ."
    (when odineval-test-after-build
      (lambda () (odineval-test-package)))))
@@ -669,7 +704,7 @@ When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
 (defun odineval-check-package ()
   "Run `odin check .' in the current Odin package directory."
   (interactive)
-  (odineval--odin-in-package "odin check ."))
+  (odineval--odin-in-buildable-package "odin check ."))
 
 ;;;###autoload
 (defun odineval-test-package ()
