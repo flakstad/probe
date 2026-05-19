@@ -1,4 +1,3 @@
-.odineval/
-__pycache__/
-*.pyc
+.probe/
+/probe
 *.elc

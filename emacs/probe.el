@@ -1,76 +1,76 @@
-;;; odineval.el --- REPL-like Odin eval helpers -*- lexical-binding: t; -*-
+;;; probe.el --- Scratch Odin probing helpers -*- lexical-binding: t; -*-
 
-;; This is intentionally small: it shells out to the local Python odineval CLI,
-;; displays results in Emacs buffers, and leaves Odin semantics to Odin itself.
+;; This is intentionally small: it shells out to the probe CLI, displays
+;; results in Emacs buffers, and leaves Odin semantics to Odin itself.
 
 (require 'compile)
 (require 'seq)
 (require 'subr-x)
 
-(defgroup odineval nil
-  "REPL-like eval helpers for Odin."
+(defgroup probe nil
+  "Scratch execution helpers for Odin."
   :group 'languages)
 
-(defcustom odineval-python-executable "python3"
-  "Python executable used to run odineval."
+(defcustom probe-command "probe"
+  "Fallback compiled probe executable."
   :type 'string
-  :group 'odineval)
+  :group 'probe)
 
-(defcustom odineval-root
+(defcustom probe-root
   (file-name-directory (directory-file-name
                         (file-name-directory (or load-file-name buffer-file-name default-directory))))
-  "Path to the local odineval checkout."
+  "Path to the local probe checkout."
   :type 'directory
-  :group 'odineval)
+  :group 'probe)
 
-(defcustom odineval-result-buffer-name "*Odin Eval*"
-  "Buffer name used for odineval command output."
+(defcustom probe-result-buffer-name "*Probe*"
+  "Buffer name used for probe command output."
   :type 'string
-  :group 'odineval)
+  :group 'probe)
 
-(defcustom odineval-inline-result-prefix "=> "
-  "Prefix used for inline odineval result overlays."
+(defcustom probe-inline-result-prefix "=> "
+  "Prefix used for inline probe result overlays."
   :type 'string
-  :group 'odineval)
+  :group 'probe)
 
-(defcustom odineval-runner-buffer-name "*Odin Eval Generated*"
-  "Buffer name used for generated Odin when `odineval-show-generated' is non-nil."
+(defcustom probe-runner-buffer-name "*Probe Generated*"
+  "Buffer name used for generated Odin when `probe-show-generated' is non-nil."
   :type 'string
-  :group 'odineval)
+  :group 'probe)
 
-(defcustom odineval-show-generated nil
+(defcustom probe-show-generated nil
   "When non-nil, request and display generated Odin before command output."
   :type 'boolean
-  :group 'odineval)
+  :group 'probe)
 
-(defcustom odineval-default-no-print nil
-  "When non-nil, default eval commands run snippets as statements."
+(defcustom probe-default-no-print nil
+  "When non-nil, default probe commands run snippets as statements."
   :type 'boolean
-  :group 'odineval)
+  :group 'probe)
 
-(defcustom odineval-test-after-build nil
+(defcustom probe-test-after-build nil
   "When non-nil, run `odin test .' after a successful package build."
   :type 'boolean
-  :group 'odineval)
+  :group 'probe)
 
-(defcustom odineval-test-command "odin test . -define:ODIN_TEST_LOG_LEVEL=warning"
-  "Odin command used by odineval test commands.
+(defcustom probe-test-command "odin test . -define:ODIN_TEST_LOG_LEVEL=warning"
+  "Odin command used by probe test commands.
 The default suppresses the verbose successful test-runner info logs while still
 showing warnings, errors, and the final test summary."
   :type 'string
-  :group 'odineval)
+  :group 'probe)
 
-(defvar odineval--last-source-buffer nil)
+(defvar probe--last-source-buffer nil)
 
-(defun odineval-clear-inline-results ()
-  "Delete odineval inline result overlays in the current buffer."
-  (remove-overlays (point-min) (point-max) 'odineval-result-overlay t))
+(defun probe-clear-inline-results ()
+  "Delete probe inline result overlays in the current buffer."
+  (remove-overlays (point-min) (point-max) 'probe-result-overlay t))
 
-(defun odineval--enable-inline-result-clearing ()
-  "Clear odineval inline overlays before the next command in this buffer."
-  (add-hook 'pre-command-hook #'odineval-clear-inline-results nil t))
+(defun probe--enable-inline-result-clearing ()
+  "Clear probe inline overlays before the next command in this buffer."
+  (add-hook 'pre-command-hook #'probe-clear-inline-results nil t))
 
-(defun odineval--project-root (&optional start)
+(defun probe--project-root (&optional start)
   "Return a likely Odin project root for START or the current buffer."
   (let* ((path (cond
                 ((bufferp start) (or (buffer-file-name start) default-directory))
@@ -85,7 +85,7 @@ showing warnings, errors, and the final test summary."
              (let ((current (file-name-as-directory (expand-file-name directory)))
                    (found nil))
                (while (and current (not found))
-                 (when (odineval--directory-has-entry-point-p current)
+                 (when (probe--directory-has-entry-point-p current)
                    (setq found current))
                  (let ((parent (file-name-directory (directory-file-name current))))
                    (if (or (null parent) (string= parent current))
@@ -98,14 +98,14 @@ showing warnings, errors, and the final test summary."
           (locate-dominating-file dir ".git")
           dir))))
 
-(defun odineval-package-directory ()
+(defun probe-package-directory ()
   "Return the Odin package directory for the current buffer.
 For Odin this is usually the directory containing the current file."
   (if buffer-file-name
       (file-name-directory (expand-file-name buffer-file-name))
     default-directory))
 
-(defun odineval--directory-has-entry-point-p (directory)
+(defun probe--directory-has-entry-point-p (directory)
   "Return non-nil when DIRECTORY contains a package `main` with `main :: proc`."
   (seq-some
    (lambda (path)
@@ -115,27 +115,57 @@ For Odin this is usually the directory containing the current file."
             (re-search-forward "^[[:space:]]*main[[:space:]]*::[[:space:]]*proc\\b" nil t))))
    (directory-files directory t "\\.odin\\'")))
 
-(defun odineval--build-package-directory ()
+(defun probe--build-package-directory ()
   "Return a package directory that can be compiled or checked.
 Prefer the current package if it has an Odin entry point, otherwise walk upward
 to the nearest ancestor package that does."
-  (or (and (odineval--directory-has-entry-point-p (odineval-package-directory))
-           (odineval-package-directory))
-      (odineval--project-root)))
+  (or (and (probe--directory-has-entry-point-p (probe-package-directory))
+           (probe-package-directory))
+      (probe--project-root)))
 
-(defun odineval-project-directory ()
+(defun probe-project-directory ()
   "Return the current Odin project directory."
-  (file-name-as-directory (odineval--project-root)))
+  (file-name-as-directory (probe--project-root)))
 
-(defun odineval--cli-args (command package code &optional no-print show internal)
-  "Return odineval CLI args for COMMAND, PACKAGE, and CODE."
+(defun probe--cli-args (command package code &optional no-print show internal save generated)
+  "Return probe CLI args for COMMAND, PACKAGE, and CODE."
   (append
-   (list "-m" "src.odineval" command package code)
+   (list command package code)
    (when no-print (list "--no-print"))
    (when show (list "--show"))
-   (when internal (list "--internal"))))
+   (when internal (list "--internal"))
+   (when save (list "--save" save))
+   (when generated (list "--generated" generated))))
 
-(defun odineval--prepare-buffer (name)
+(defun probe--compiled-command ()
+  "Return the compiled probe executable, or nil."
+  (let* ((root (file-name-as-directory (expand-file-name probe-root)))
+         (local (expand-file-name "probe" root)))
+    (cond
+     ((file-executable-p local) local)
+     ((executable-find probe-command) (executable-find probe-command))
+     (t nil))))
+
+(defun probe--compiled-command-or-error ()
+  "Return the compiled probe executable or signal a user-facing error."
+  (or (probe--compiled-command)
+      (user-error "Compiled probe CLI not found; run `odin build cmd/probe -out:probe`")))
+
+(defun probe--process-command (args)
+  "Return a process command for probe ARGS."
+  (cons (probe--compiled-command-or-error) args))
+
+(defun probe--read-generated-file (path)
+  "Return generated Odin from PATH, deleting PATH when possible."
+  (when (and path (file-exists-p path))
+    (unwind-protect
+        (with-temp-buffer
+          (insert-file-contents path)
+          (buffer-string))
+      (ignore-errors
+        (delete-file path)))))
+
+(defun probe--prepare-buffer (name)
   "Create and clear buffer NAME."
   (let ((buffer (get-buffer-create name)))
     (with-current-buffer buffer
@@ -147,7 +177,7 @@ to the nearest ancestor package that does."
         (visual-line-mode 1)))
     buffer))
 
-(defun odineval--split-generated-output (text)
+(defun probe--split-generated-output (text)
   "Split TEXT from `--show' into (GENERATED . OUTPUT).
 This relies on generated programs ending before the first Odin compiler/runtime
 output. It is deliberately best-effort; if splitting is unclear, all text is
@@ -160,9 +190,9 @@ treated as command output."
           (cons nil text)))
     (cons nil text)))
 
-(defun odineval--visible-output (stdout stderr show-generated)
+(defun probe--visible-output (stdout stderr show-generated)
   "Return (GENERATED . VISIBLE-OUTPUT) from STDOUT and STDERR."
-  (let* ((split (and show-generated (odineval--split-generated-output stdout)))
+  (let* ((split (and show-generated (probe--split-generated-output stdout)))
          (generated (car-safe split))
          (visible-stdout (if split (cdr split) stdout))
          (visible (string-trim
@@ -173,39 +203,39 @@ treated as command output."
                            stderr))))
     (cons generated visible)))
 
-(defun odineval--show-inline-result (buffer beg end text exit-code)
+(defun probe--show-inline-result (buffer beg end text exit-code)
   "Show TEXT inline in BUFFER after BEG and END."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (remove-overlays beg end 'odineval-result-overlay t)
+      (remove-overlays beg end 'probe-result-overlay t)
       (let* ((trimmed (string-trim text))
              (display-text (if (string-empty-p trimmed)
-                               (format " %s<exit %s>" odineval-inline-result-prefix exit-code)
-                             (format " %s%s" odineval-inline-result-prefix
+                               (format " %s<exit %s>" probe-inline-result-prefix exit-code)
+                             (format " %s%s" probe-inline-result-prefix
                                      (replace-regexp-in-string "[\n\r\t ]+" " " trimmed))))
              (ov (make-overlay beg end)))
         (put-text-property 0 1 'cursor 0 display-text)
         (put-text-property 0 (length display-text) 'face
                            (if (zerop exit-code) 'shadow 'error)
                            display-text)
-        (overlay-put ov 'odineval-result-overlay t)
+        (overlay-put ov 'probe-result-overlay t)
         (overlay-put ov 'priority 1000)
         (overlay-put ov 'evaporate t)
         (overlay-put ov 'after-string display-text)))))
 
-(defun odineval--message-result (text exit-code)
+(defun probe--message-result (text exit-code)
   "Show a concise minibuffer message for TEXT and EXIT-CODE."
   (let ((trimmed (string-trim text)))
     (message "%s"
              (cond
               ((not (zerop exit-code))
                (if (string-empty-p trimmed)
-                   (format "odineval exited %s" exit-code)
+                   (format "probe exited %s" exit-code)
                  (replace-regexp-in-string "[\n\r\t ]+" " " trimmed)))
               ((string-empty-p trimmed) "")
               (t (replace-regexp-in-string "[\n\r\t ]+" " " trimmed))))))
 
-(defun odineval--insert-comment-result (buffer line-end text exit-code)
+(defun probe--insert-comment-result (buffer line-end text exit-code)
   "Insert TEXT as a // => result comment in BUFFER after LINE-END."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
@@ -225,10 +255,10 @@ treated as command output."
                           (if (zerop exit-code) "" (format "<exit %s> " exit-code))
                           single-line)))))))
 
-(defun odineval--display-generated (generated)
+(defun probe--display-generated (generated)
   "Display GENERATED Odin in a separate buffer when non-nil."
   (when generated
-    (let ((runner-buffer (odineval--prepare-buffer odineval-runner-buffer-name)))
+    (let ((runner-buffer (probe--prepare-buffer probe-runner-buffer-name)))
       (with-current-buffer runner-buffer
         (let ((inhibit-read-only t))
           (insert generated)
@@ -236,43 +266,89 @@ treated as command output."
             (odin-mode))))
       (display-buffer runner-buffer))))
 
-(defun odineval--display-output (stdout stderr exit-code show-generated)
+(defun probe--display-output (stdout stderr exit-code show-generated)
   "Display STDOUT and STDERR with EXIT-CODE.
 When SHOW-GENERATED is non-nil, split generated Odin into a separate buffer when
 possible."
-  (let* ((visible-data (odineval--visible-output stdout stderr show-generated))
+  (let* ((visible-data (probe--visible-output stdout stderr show-generated))
          (generated (car visible-data))
          (visible (cdr visible-data))
-         (result-buffer (odineval--prepare-buffer odineval-result-buffer-name)))
-    (odineval--display-generated generated)
+         (result-buffer (probe--prepare-buffer probe-result-buffer-name)))
+    (probe--display-generated generated)
     (with-current-buffer result-buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (format "$ odineval exited %s\n\n" exit-code))
+        (insert (format "$ probe exited %s\n\n" exit-code))
         (unless (string-empty-p visible)
           (insert visible)
           (unless (string-suffix-p "\n" visible)
             (insert "\n")))
         (goto-char (point-min))))
     (display-buffer result-buffer)
-    (message "odineval exited %s" exit-code)))
+    (message "probe exited %s" exit-code)))
 
-(defun odineval--run (command package code &optional no-print show internal display bounds)
-  "Run odineval COMMAND for PACKAGE and CODE."
-  (setq odineval--last-source-buffer (current-buffer))
+(defun probe--run (command package code &optional no-print show internal display bounds save)
+  "Run probe COMMAND for PACKAGE and CODE."
+  (setq probe--last-source-buffer (current-buffer))
   (let* ((source-buffer (current-buffer))
          (bounds (or bounds
                      (and (memq display '(inline comment))
                           (cons (line-beginning-position) (line-end-position)))))
-         (default-directory (file-name-as-directory (expand-file-name odineval-root)))
-         (stdout-buffer (generate-new-buffer " *odineval-stdout*"))
-         (stderr-buffer (generate-new-buffer " *odineval-stderr*"))
-         (args (odineval--cli-args command package code no-print show internal)))
+         (default-directory (file-name-as-directory (expand-file-name probe-root)))
+         (compiled (probe--compiled-command-or-error))
+         (generated-file (and show (make-temp-file "probe-generated-" nil ".odin")))
+         (stdout-buffer (generate-new-buffer " *probe-stdout*"))
+         (stderr-buffer (generate-new-buffer " *probe-stderr*"))
+         (args (probe--cli-args command package code no-print (and show (not generated-file)) internal save generated-file)))
     (make-process
-     :name "odineval"
+     :name "probe"
      :buffer stdout-buffer
      :stderr stderr-buffer
-     :command (cons odineval-python-executable args)
+     :command (cons compiled args)
+     :noquery t
+     :sentinel
+     (lambda (process _event)
+       (when (memq (process-status process) '(exit signal))
+         (let ((exit-code (process-exit-status process))
+               (stdout (with-current-buffer stdout-buffer
+                         (buffer-substring-no-properties (point-min) (point-max))))
+               (stderr (with-current-buffer stderr-buffer
+                         (buffer-substring-no-properties (point-min) (point-max))))
+               (generated-from-file (probe--read-generated-file generated-file)))
+           (when (buffer-live-p stdout-buffer) (kill-buffer stdout-buffer))
+           (when (buffer-live-p stderr-buffer) (kill-buffer stderr-buffer))
+           (pcase display
+             ('inline
+              (let* ((visible-data (probe--visible-output stdout stderr show))
+                     (generated (or generated-from-file (car visible-data)))
+                     (visible (cdr visible-data)))
+                (probe--display-generated generated)
+                (probe--show-inline-result source-buffer (car bounds) (cdr bounds) visible exit-code)
+                (probe--message-result visible exit-code)))
+             ('comment
+              (let* ((visible-data (probe--visible-output stdout stderr show))
+                     (generated (or generated-from-file (car visible-data)))
+                     (visible (cdr visible-data)))
+                (probe--display-generated generated)
+                (probe--insert-comment-result source-buffer (cdr bounds) visible exit-code)
+                (probe--message-result visible exit-code)))
+             (_
+              (if generated-from-file
+                  (progn
+                    (probe--display-generated generated-from-file)
+                    (probe--display-output stdout stderr exit-code nil))
+                (probe--display-output stdout stderr exit-code show))))))))))
+
+(defun probe--run-store-command (args)
+  "Run a probe store command with ARGS and display the result buffer."
+  (let* ((default-directory (file-name-as-directory (expand-file-name probe-root)))
+         (stdout-buffer (generate-new-buffer " *probe-store-stdout*"))
+         (stderr-buffer (generate-new-buffer " *probe-store-stderr*")))
+    (make-process
+     :name "probe-store"
+     :buffer stdout-buffer
+     :stderr stderr-buffer
+     :command (probe--process-command (cons "store" args))
      :noquery t
      :sentinel
      (lambda (process _event)
@@ -284,29 +360,13 @@ possible."
                          (buffer-substring-no-properties (point-min) (point-max)))))
            (when (buffer-live-p stdout-buffer) (kill-buffer stdout-buffer))
            (when (buffer-live-p stderr-buffer) (kill-buffer stderr-buffer))
-           (pcase display
-             ('inline
-              (let* ((visible-data (odineval--visible-output stdout stderr show))
-                     (generated (car visible-data))
-                     (visible (cdr visible-data)))
-                (odineval--display-generated generated)
-                (odineval--show-inline-result source-buffer (car bounds) (cdr bounds) visible exit-code)
-                (odineval--message-result visible exit-code)))
-             ('comment
-              (let* ((visible-data (odineval--visible-output stdout stderr show))
-                     (generated (car visible-data))
-                     (visible (cdr visible-data)))
-                (odineval--display-generated generated)
-                (odineval--insert-comment-result source-buffer (cdr bounds) visible exit-code)
-                (odineval--message-result visible exit-code)))
-             (_
-              (odineval--display-output stdout stderr exit-code show)))))))))
+           (probe--display-output stdout stderr exit-code nil)))))))
 
-(defun odineval-read-code ()
+(defun probe-read-code ()
   "Read an Odin expression from the minibuffer, defaulting to symbol at point."
   (read-string "Odin expression: " (or (thing-at-point 'symbol t) "")))
 
-(defun odineval--strip-line-comment-prefix (text)
+(defun probe--strip-line-comment-prefix (text)
   "Strip Odin // comment prefixes from TEXT."
   (string-join
    (mapcar
@@ -315,14 +375,14 @@ possible."
     (split-string text "\n"))
    "\n"))
 
-(defun odineval--comment-line-p ()
+(defun probe--comment-line-p ()
   "Return non-nil when the current line starts with an Odin line comment."
   (save-excursion
     (beginning-of-line)
     (and (looking-at-p "[[:space:]]*//")
          (not (looking-at-p "[[:space:]]*//[[:space:]]*=>")))))
 
-(defun odineval--comment-block-bounds ()
+(defun probe--comment-block-bounds ()
   "Return bounds for the enclosing /* ... */ comment block around point."
   (let* ((cursor (point))
          (line-delimiter-p
@@ -363,7 +423,7 @@ possible."
      (t
       (error "Point is not inside a /* ... */ comment block")))))
 
-(defun odineval--strip-comment-block-prefix (text)
+(defun probe--strip-comment-block-prefix (text)
   "Strip Odin /* ... */ comment markers from TEXT and normalize lines."
   (let* ((without-open
           (replace-regexp-in-string
@@ -385,28 +445,28 @@ possible."
            "\n")))
     (string-trim without-results)))
 
-(defun odineval--result-comment-line-p ()
-  "Return non-nil when the current line is an odineval // => result line."
+(defun probe--result-comment-line-p ()
+  "Return non-nil when the current line is a probe // => result line."
   (save-excursion
     (beginning-of-line)
     (looking-at-p "[[:space:]]*//[[:space:]]*=>")))
 
-(defun odineval-comment-block-code ()
+(defun probe-comment-block-code ()
   "Return uncommented code from the enclosing /* ... */ comment block around point."
-  (let* ((bounds (odineval--comment-block-bounds))
+  (let* ((bounds (probe--comment-block-bounds))
          (text (buffer-substring-no-properties (car bounds) (cdr bounds)))
-         (text-no-markers (odineval--strip-comment-block-prefix text)))
-    (string-trim (odineval--strip-line-comment-prefix text-no-markers))))
+         (text-no-markers (probe--strip-comment-block-prefix text)))
+    (string-trim (probe--strip-line-comment-prefix text-no-markers))))
 
-(defun odineval-current-line-code ()
+(defun probe-current-line-code ()
   "Return code from the current line, stripping a leading // if present."
   (let ((line (string-trim
                (buffer-substring-no-properties
                 (line-beginning-position)
                 (line-end-position)))))
-    (string-trim (odineval--strip-line-comment-prefix line))))
+    (string-trim (probe--strip-line-comment-prefix line))))
 
-(defun odineval--call-bounds-before-point ()
+(defun probe--call-bounds-before-point ()
   "Return bounds of the parenthesized call ending at or before point.
 This is a lightweight Odin-aware helper for cases like:
 
@@ -437,7 +497,7 @@ where point is just after the inner call."
           (when (< (point) open)
             (cons (point) end)))))))
 
-(defun odineval--atom-bounds-before-point ()
+(defun probe--atom-bounds-before-point ()
   "Return bounds of the Odin atom ending at or before point."
   (save-excursion
     (skip-chars-backward " \t\n")
@@ -446,54 +506,100 @@ where point is just after the inner call."
       (when (< (point) end)
         (cons (point) end)))))
 
-(defun odineval-current-line-call-or-atom-unit ()
+(defun probe-current-line-call-or-atom-unit ()
   "Return current call/atom before point, falling back to current line."
-  (if-let ((bounds (or (odineval--call-bounds-before-point)
-                       (odineval--atom-bounds-before-point))))
+  (if-let ((bounds (or (probe--call-bounds-before-point)
+                       (probe--atom-bounds-before-point))))
       (cons (buffer-substring-no-properties (car bounds) (cdr bounds)) bounds)
-    (cons (odineval-current-line-code)
+    (cons (probe-current-line-code)
           (cons (line-beginning-position) (line-end-position)))))
 
-(defun odineval-current-line-bounds ()
+(defun probe-current-line-bounds ()
   "Return bounds of the current line."
   (cons (line-beginning-position) (line-end-position)))
 
-(defun odineval-current-unit ()
-  "Return (CODE . BOUNDS) for the current eval unit.
+(defun probe-current-unit ()
+  "Return (CODE . BOUNDS) for the current probe unit.
 When point is inside a `/* ... */` block, the unit is the whole block.
 Otherwise prefer the parenthesized call ending before point, falling back to the
 atom before point, then the current line."
-  (if-let ((bounds (ignore-errors (odineval--comment-block-bounds))))
-      (cons (odineval-comment-block-code) bounds)
-    (odineval-current-line-call-or-atom-unit)))
+  (if-let ((bounds (ignore-errors (probe--comment-block-bounds))))
+      (cons (probe-comment-block-code) bounds)
+    (probe-current-line-call-or-atom-unit)))
 
 ;;;###autoload
-(defun odineval-run-expression (code)
+(defun probe-run-expression (code)
   "Run Odin expression CODE in a generated runner for the current package."
-  (interactive (list (odineval-read-code)))
-  (odineval--run "run"
-                 (odineval-package-directory)
+  (interactive (list (probe-read-code)))
+  (probe--run "run"
+                 (probe-package-directory)
                  code
-                 odineval-default-no-print
-                 odineval-show-generated
+                 probe-default-no-print
+                 probe-show-generated
                  nil
                  'buffer))
 
 ;;;###autoload
-(defun odineval-check-expression (code)
+(defun probe-run-expression-save (code name)
+  "Run Odin expression CODE and save successful stdout to store slot NAME."
+  (interactive (list (probe-read-code)
+                     (read-string "Save result as: ")))
+  (probe--run "run"
+                 (probe-package-directory)
+                 code
+                 probe-default-no-print
+                 probe-show-generated
+                 nil
+                 'buffer
+                 nil
+                 name))
+
+;;;###autoload
+(defun probe-check-expression (code)
   "Check Odin expression CODE in a generated runner for the current package."
-  (interactive (list (odineval-read-code)))
-  (odineval--run "check"
-                 (odineval-package-directory)
+  (interactive (list (probe-read-code)))
+  (probe--run "check"
+                 (probe-package-directory)
                  code
-                 odineval-default-no-print
-                 odineval-show-generated
+                 probe-default-no-print
+                 probe-show-generated
                  nil
                  'buffer))
 
 ;;;###autoload
-(defun odineval-run-line (&optional no-print)
-  "Run the current eval unit and show the result inline.
+(defun probe-store-save (name value)
+  "Save VALUE to probe store slot NAME for the current package."
+  (interactive (list (read-string "Store name: ")
+                     (read-string "Value: ")))
+  (probe--run-store-command (list "save" (probe-package-directory) name value)))
+
+;;;###autoload
+(defun probe-store-load (name)
+  "Load probe store slot NAME for the current package into `*Probe*'."
+  (interactive (list (read-string "Load store name: ")))
+  (probe--run-store-command (list "load" (probe-package-directory) name)))
+
+;;;###autoload
+(defun probe-store-list ()
+  "List probe store slots for the current package."
+  (interactive)
+  (probe--run-store-command (list "list" (probe-package-directory))))
+
+;;;###autoload
+(defun probe-store-remove (name)
+  "Remove probe store slot NAME for the current package."
+  (interactive (list (read-string "Remove store name: ")))
+  (probe--run-store-command (list "rm" (probe-package-directory) name)))
+
+;;;###autoload
+(defun probe-store-path ()
+  "Show the probe store path for the current package."
+  (interactive)
+  (probe--run-store-command (list "path" (probe-package-directory))))
+
+;;;###autoload
+(defun probe-run-line (&optional no-print)
+  "Run the current probe unit and show the result inline.
 If point is inside a scratch `/* ... */` block, run the whole block.
 Otherwise run the current line. This is intended for scratch blocks such as:
 
@@ -503,113 +609,129 @@ Otherwise run the current line. This is intended for scratch blocks such as:
 
 With prefix argument NO-PRINT, treat the line as statements."
   (interactive "P")
-  (let ((unit (odineval-current-unit)))
-    (odineval--run "run"
-                   (odineval-package-directory)
+  (let ((unit (probe-current-unit)))
+    (probe--run "run"
+                   (probe-package-directory)
                    (car unit)
-                   (or no-print odineval-default-no-print)
-                   odineval-show-generated
+                   (or no-print probe-default-no-print)
+                   probe-show-generated
                    t
                    'inline
                    (cdr unit))))
 
 ;;;###autoload
-(defun odineval-run-whole-line (&optional no-print)
+(defun probe-run-whole-line (&optional no-print)
   "Run the whole current line and show the result inline.
 This intentionally ignores point-sensitive call/atom selection."
   (interactive "P")
-  (odineval--run "run"
-                 (odineval-package-directory)
-                 (odineval-current-line-code)
-                 (or no-print odineval-default-no-print)
-                 odineval-show-generated
+  (probe--run "run"
+                 (probe-package-directory)
+                 (probe-current-line-code)
+                 (or no-print probe-default-no-print)
+                 probe-show-generated
                  t
                  'inline
-                 (odineval-current-line-bounds)))
+                 (probe-current-line-bounds)))
 
 ;;;###autoload
-(defun odineval-insert-line-result (&optional no-print)
-  "Run the current eval unit and insert the result as a // => comment."
+(defun probe-insert-line-result (&optional no-print)
+  "Run the current probe unit and insert the result as a // => comment."
   (interactive "P")
-  (let ((unit (odineval-current-unit)))
-    (odineval--run "run"
-                   (odineval-package-directory)
+  (let ((unit (probe-current-unit)))
+    (probe--run "run"
+                   (probe-package-directory)
                    (car unit)
-                   (or no-print odineval-default-no-print)
-                   odineval-show-generated
+                   (or no-print probe-default-no-print)
+                   probe-show-generated
                    t
                    'comment
                    (cdr unit))))
 
 ;;;###autoload
-(defun odineval-popup-line (&optional no-print)
-  "Run the current eval unit and show output in the odineval result buffer."
+(defun probe-popup-line (&optional no-print)
+  "Run the current probe unit and show output in the probe result buffer."
   (interactive "P")
-  (let ((unit (odineval-current-unit)))
-    (odineval--run "run"
-                   (odineval-package-directory)
+  (let ((unit (probe-current-unit)))
+    (probe--run "run"
+                   (probe-package-directory)
                    (car unit)
-                   (or no-print odineval-default-no-print)
-                   odineval-show-generated
+                   (or no-print probe-default-no-print)
+                   probe-show-generated
                    t
                    'buffer
                    (cdr unit))))
 
 ;;;###autoload
-(defun odineval-insert-comment-block-result (&optional no-print)
+(defun probe-run-line-save (&optional no-print)
+  "Run the current probe unit and save successful stdout to a named store slot."
+  (interactive "P")
+  (let ((unit (probe-current-unit))
+        (name (read-string "Save result as: ")))
+    (probe--run "run"
+                   (probe-package-directory)
+                   (car unit)
+                   (or no-print probe-default-no-print)
+                   probe-show-generated
+                   t
+                   'buffer
+                   (cdr unit)
+                   name)))
+
+;;;###autoload
+(defun probe-insert-comment-block-result (&optional no-print)
   "Run the current `/* ... */` comment block and insert a // => result comment."
   (interactive "P")
-  (let ((bounds (odineval--comment-block-bounds)))
-    (odineval--run "run"
-                   (odineval-package-directory)
-                   (odineval-comment-block-code)
-                   (or no-print odineval-default-no-print)
-                   odineval-show-generated
+  (let ((bounds (probe--comment-block-bounds)))
+    (probe--run "run"
+                   (probe-package-directory)
+                   (probe-comment-block-code)
+                   (or no-print probe-default-no-print)
+                   probe-show-generated
                    t
                    'comment
                    bounds)))
 
 ;;;###autoload
-(defun odineval-check-line (&optional no-print)
+(defun probe-check-line (&optional no-print)
   "Check the current line as Odin code inside the current package.
 If the line starts with `//`, strip the comment prefix first."
   (interactive "P")
-  (odineval--run "check"
-                 (odineval-package-directory)
-                 (odineval-current-line-code)
-                 (or no-print odineval-default-no-print)
-                 odineval-show-generated
+  (probe--run "check"
+                 (probe-package-directory)
+                 (probe-current-line-code)
+                 (or no-print probe-default-no-print)
+                 probe-show-generated
                  t
                  'buffer))
 
 ;;;###autoload
-(defun odineval-run-region (start end &optional no-print)
+(defun probe-run-region (start end &optional no-print)
   "Run the selected Odin expression or statement region.
 With prefix argument NO-PRINT, treat the region as statements."
   (interactive "r\nP")
-  (odineval--run "run"
-                 (odineval-package-directory)
+  (probe--run "run"
+                 (probe-package-directory)
                  (buffer-substring-no-properties start end)
-                 (or no-print odineval-default-no-print)
-                 odineval-show-generated
+                 (or no-print probe-default-no-print)
+                 probe-show-generated
                  nil
                  'buffer))
 
 ;;;###autoload
-(defun odineval-check-region (start end &optional no-print)
+(defun probe-check-region (start end &optional no-print)
   "Check the selected Odin expression or statement region.
 With prefix argument NO-PRINT, treat the region as statements."
   (interactive "r\nP")
-  (odineval--run "check"
-                 (odineval-package-directory)
+  (probe--run "check"
+                 (probe-package-directory)
                  (buffer-substring-no-properties start end)
-                 (or no-print odineval-default-no-print)
-                 odineval-show-generated
+                 (or no-print probe-default-no-print)
+                 probe-show-generated
                  nil
                  'buffer))
 
 ;;;###autoload
-(defun odineval-run-comment-block (&optional no-print)
+(defun probe-run-comment-block (&optional no-print)
   "Run uncommented code from the enclosing `/* ... */` comment block.
 With prefix argument NO-PRINT, treat the code as statements.
 
@@ -621,34 +743,34 @@ This is the Odin analogue of keeping exploratory calls in a Clojure
   target.some_proc(1, 2)
   */"
   (interactive "P")
-  (let ((bounds (odineval--comment-block-bounds)))
-    (odineval--run "run"
-                   (odineval-package-directory)
-                   (odineval-comment-block-code)
-                   (or no-print odineval-default-no-print)
-                   odineval-show-generated
+  (let ((bounds (probe--comment-block-bounds)))
+    (probe--run "run"
+                   (probe-package-directory)
+                   (probe-comment-block-code)
+                   (or no-print probe-default-no-print)
+                   probe-show-generated
                    t
                    'inline
                    bounds)))
 
 ;;;###autoload
-(defun odineval-check-comment-block (&optional no-print)
+(defun probe-check-comment-block (&optional no-print)
   "Check uncommented code from the enclosing `/* ... */` comment block.
 With prefix argument NO-PRINT, treat the code as statements."
   (interactive "P")
-  (let ((bounds (odineval--comment-block-bounds)))
-    (odineval--run "check"
-                   (odineval-package-directory)
-                   (odineval-comment-block-code)
-                   (or no-print odineval-default-no-print)
-                   odineval-show-generated
+  (let ((bounds (probe--comment-block-bounds)))
+    (probe--run "check"
+                   (probe-package-directory)
+                   (probe-comment-block-code)
+                   (or no-print probe-default-no-print)
+                   probe-show-generated
                    t
                    'buffer
                    bounds)))
 
-(defun odineval--command-buffer (directory)
+(defun probe--command-buffer (directory)
   "Return the command output buffer for DIRECTORY."
-  (let ((buffer (get-buffer-create odineval-result-buffer-name)))
+  (let ((buffer (get-buffer-create probe-result-buffer-name)))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -659,7 +781,7 @@ With prefix argument NO-PRINT, treat the code as statements."
       (visual-line-mode 1))
     buffer))
 
-(defun odineval--compact-command-output (stdout stderr)
+(defun probe--compact-command-output (stdout stderr)
   "Return compact one-line command output from STDOUT and STDERR."
   (let ((output (string-trim
                  (concat stdout
@@ -669,21 +791,21 @@ With prefix argument NO-PRINT, treat the code as statements."
                          stderr))))
     (replace-regexp-in-string "[\n\r\t ]+" " " output)))
 
-(defun odineval--run-odin-command (directory command &optional on-success show-output-on-success)
+(defun probe--run-odin-command (directory command &optional on-success show-output-on-success)
   "Run Odin COMMAND in DIRECTORY.
-Show `odineval-result-buffer-name' only on failure. Run ON-SUCCESS on exit 0.
+Show `probe-result-buffer-name' only on failure. Run ON-SUCCESS on exit 0.
 When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
   (let* ((directory (file-name-as-directory (expand-file-name directory)))
-         (buffer (odineval--command-buffer directory))
-         (stdout-buffer (generate-new-buffer " *odineval-command-stdout*"))
-         (stderr-buffer (generate-new-buffer " *odineval-command-stderr*")))
+         (buffer (probe--command-buffer directory))
+         (stdout-buffer (generate-new-buffer " *probe-command-stdout*"))
+         (stderr-buffer (generate-new-buffer " *probe-command-stderr*")))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (goto-char (point-max))
         (insert (format "$ %s\n\n" command))))
     (let ((default-directory directory))
       (make-process
-       :name "odineval-command"
+       :name "probe-command"
        :buffer stdout-buffer
        :stderr stderr-buffer
        :command (list shell-file-name shell-command-switch command)
@@ -710,7 +832,7 @@ When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
                    (unless (string-suffix-p "\n" stderr) (insert "\n")))))
              (if (zerop exit-code)
                  (progn
-                   (let ((compact-output (odineval--compact-command-output stdout stderr)))
+                   (let ((compact-output (probe--compact-command-output stdout stderr)))
                      (message "%s"
                               (if (and show-output-on-success
                                        (not (string-empty-p compact-output)))
@@ -720,130 +842,130 @@ When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
                (display-buffer buffer)
                (message "%s: failed" command)))))))))
 
-(defun odineval--odin-in-package (command &optional on-success show-output-on-success)
+(defun probe--odin-in-package (command &optional on-success show-output-on-success)
   "Run Odin COMMAND in the current package directory."
-  (odineval--run-odin-command (odineval-package-directory) command on-success show-output-on-success))
+  (probe--run-odin-command (probe-package-directory) command on-success show-output-on-success))
 
-(defun odineval--odin-in-buildable-package (command &optional on-success show-output-on-success)
+(defun probe--odin-in-buildable-package (command &optional on-success show-output-on-success)
   "Run Odin COMMAND in the nearest runnable package directory."
-  (odineval--run-odin-command (odineval--build-package-directory) command on-success show-output-on-success))
+  (probe--run-odin-command (probe--build-package-directory) command on-success show-output-on-success))
 
-(defun odineval--odin-in-project (command &optional on-success show-output-on-success)
+(defun probe--odin-in-project (command &optional on-success show-output-on-success)
   "Run Odin COMMAND in the current project directory."
-  (odineval--run-odin-command (odineval-project-directory) command on-success show-output-on-success))
+  (probe--run-odin-command (probe-project-directory) command on-success show-output-on-success))
 
 ;;;###autoload
-(defun odineval-run-package ()
+(defun probe-run-package ()
   "Run `odin run .' in the current Odin package directory."
   (interactive)
-  (odineval--odin-in-package "odin run ."))
+  (probe--odin-in-package "odin run ."))
 
 ;;;###autoload
-(defun odineval-build-package ()
+(defun probe-build-package ()
   "Run `odin build .' in the current Odin package directory."
   (interactive)
-  (odineval--odin-in-buildable-package
+  (probe--odin-in-buildable-package
    "odin build ."
-   (when odineval-test-after-build
-     (lambda () (odineval-test-package)))))
+   (when probe-test-after-build
+     (lambda () (probe-test-package)))))
 
 ;;;###autoload
-(defun odineval-check-package ()
+(defun probe-check-package ()
   "Run `odin check .' in the current Odin package directory."
   (interactive)
-  (odineval--odin-in-buildable-package "odin check ."))
+  (probe--odin-in-buildable-package "odin check ."))
 
 ;;;###autoload
-(defun odineval-test-package ()
+(defun probe-test-package ()
   "Run `odin test .' in the current Odin package directory."
   (interactive)
-  (odineval--odin-in-package odineval-test-command nil t))
+  (probe--odin-in-package probe-test-command nil t))
 
 ;;;###autoload
-(defun odineval-run-project ()
+(defun probe-run-project ()
   "Run `odin run .' in the current Odin project directory."
   (interactive)
-  (odineval--odin-in-project "odin run ."))
+  (probe--odin-in-project "odin run ."))
 
 ;;;###autoload
-(defun odineval-build-project ()
+(defun probe-build-project ()
   "Run `odin build .' in the current Odin project directory."
   (interactive)
-  (odineval--odin-in-project "odin build ."))
+  (probe--odin-in-project "odin build ."))
 
 ;;;###autoload
-(defun odineval-check-project ()
+(defun probe-check-project ()
   "Run `odin check .' in the current Odin project directory."
   (interactive)
-  (odineval--odin-in-project "odin check ."))
+  (probe--odin-in-project "odin check ."))
 
 ;;;###autoload
-(defun odineval-test-project ()
+(defun probe-test-project ()
   "Run `odin test .' in the current Odin project directory."
   (interactive)
-  (odineval--odin-in-project odineval-test-command nil t))
+  (probe--odin-in-project probe-test-command nil t))
 
 ;;;###autoload
-(defun odineval-toggle-test-after-build ()
+(defun probe-toggle-test-after-build ()
   "Toggle running `odin test .' after successful package builds."
   (interactive)
-  (setq odineval-test-after-build (not odineval-test-after-build))
-  (message "odineval-test-after-build: %s" odineval-test-after-build))
+  (setq probe-test-after-build (not probe-test-after-build))
+  (message "probe-test-after-build: %s" probe-test-after-build))
 
 ;;;###autoload
-(defun odineval-run-proc (name args)
+(defun probe-run-proc (name args)
   "Run target proc NAME with raw Odin ARGS."
   (interactive
    (list (read-string "Proc: " (or (thing-at-point 'symbol t) ""))
          (read-string "Args: ")))
-  (odineval-run-expression (format "target.%s(%s)" name args)))
+  (probe-run-expression (format "target.%s(%s)" name args)))
 
 ;;;###autoload
-(defun odineval-run-proc-no-args ()
+(defun probe-run-proc-no-args ()
   "Run the target proc at point with no arguments."
   (interactive)
   (let ((name (or (thing-at-point 'symbol t)
                   (read-string "Proc: "))))
-    (odineval-run-expression (format "target.%s()" name))))
+    (probe-run-expression (format "target.%s()" name))))
 
 ;;;###autoload
-(defun odineval-toggle-show-generated ()
-  "Toggle generated Odin display for odineval commands."
+(defun probe-toggle-show-generated ()
+  "Toggle generated Odin display for probe commands."
   (interactive)
-  (setq odineval-show-generated (not odineval-show-generated))
-  (message "odineval-show-generated: %s" odineval-show-generated))
+  (setq probe-show-generated (not probe-show-generated))
+  (message "probe-show-generated: %s" probe-show-generated))
 
 ;;;###autoload
-(defun odineval-switch-to-result ()
-  "Display the odineval result buffer."
+(defun probe-switch-to-result ()
+  "Display the probe result buffer."
   (interactive)
-  (pop-to-buffer odineval-result-buffer-name))
+  (pop-to-buffer probe-result-buffer-name))
 
 ;;;###autoload
-(defun odineval-switch-to-source ()
-  "Return to the most recent odineval source buffer."
+(defun probe-switch-to-source ()
+  "Return to the most recent probe source buffer."
   (interactive)
-  (if (buffer-live-p odineval--last-source-buffer)
-      (pop-to-buffer odineval--last-source-buffer)
-    (message "No odineval source buffer recorded.")))
+  (if (buffer-live-p probe--last-source-buffer)
+      (pop-to-buffer probe--last-source-buffer)
+    (message "No probe source buffer recorded.")))
 
-(defun odineval-setup-odin-mode-keys ()
-  "Install odineval keybindings in the current Odin buffer."
-  (odineval--enable-inline-result-clearing)
-  (local-set-key (kbd "C-c C-e") #'odineval-run-line)
-  (local-set-key (kbd "C-c C-p") #'odineval-popup-line)
-  (local-set-key (kbd "C-c C-i") #'odineval-insert-line-result)
-  (local-set-key (kbd "C-c C-r") #'odineval-run-region)
-  (local-set-key (kbd "C-c C-c") #'odineval-run-whole-line)
-  (local-set-key (kbd "C-c C-x") #'odineval-run-comment-block)
-  (local-set-key (kbd "C-c C-k") #'odineval-check-expression)
-  (local-set-key (kbd "C-c C-a") #'odineval-run-package)
-  (local-set-key (kbd "C-c C-b") #'odineval-build-package)
-  (local-set-key (kbd "C-c C-v") #'odineval-check-package)
-  (local-set-key (kbd "C-c C-t") #'odineval-test-package)
-  (local-set-key (kbd "C-c C-s") #'odineval-toggle-show-generated)
-  (local-set-key (kbd "C-c C-z") #'odineval-switch-to-result))
+(defun probe-setup-odin-mode-keys ()
+  "Install probe keybindings in the current Odin buffer."
+  (probe--enable-inline-result-clearing)
+  (local-set-key (kbd "C-c C-e") #'probe-run-line)
+  (local-set-key (kbd "C-c C-p") #'probe-popup-line)
+  (local-set-key (kbd "C-c C-i") #'probe-insert-line-result)
+  (local-set-key (kbd "C-c C-r") #'probe-run-region)
+  (local-set-key (kbd "C-c C-c") #'probe-run-whole-line)
+  (local-set-key (kbd "C-c C-x") #'probe-run-comment-block)
+  (local-set-key (kbd "C-c C-k") #'probe-check-expression)
+  (local-set-key (kbd "C-c C-a") #'probe-run-package)
+  (local-set-key (kbd "C-c C-b") #'probe-build-package)
+  (local-set-key (kbd "C-c C-v") #'probe-check-package)
+  (local-set-key (kbd "C-c C-t") #'probe-test-package)
+  (local-set-key (kbd "C-c C-s") #'probe-toggle-show-generated)
+  (local-set-key (kbd "C-c C-z") #'probe-switch-to-result))
 
-(provide 'odineval)
+(provide 'probe)
 
-;;; odineval.el ends here
+;;; probe.el ends here
