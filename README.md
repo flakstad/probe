@@ -153,8 +153,8 @@ Default commands:
 - `M-x probe-store-remove`: remove a value slot
 - `M-x probe-store-path`: show the active store directory
 - `M-x probe-run-package`: run ordinary `odin run .` in the current package
-- `M-x probe-build-package`: run ordinary `odin build .` in the current package
-- `M-x probe-check-package`: run ordinary `odin check .` in the current package
+- `M-x probe-build-package`: run ordinary `odin build .` in the current package, even when it is not a `main` package
+- `M-x probe-check-package`: run ordinary `odin check .` in the current package, even when it is not a `main` package
 - `M-x probe-test-package`: run ordinary `odin test .` in the current package
 - `M-x probe-run-project`: run ordinary `odin run .` at the detected project root
 - `M-x probe-build-project`: run ordinary `odin build .` at the detected project root

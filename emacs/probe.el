@@ -115,14 +115,6 @@ For Odin this is usually the directory containing the current file."
             (re-search-forward "^[[:space:]]*main[[:space:]]*::[[:space:]]*proc\\b" nil t))))
    (directory-files directory t "\\.odin\\'")))
 
-(defun probe--build-package-directory ()
-  "Return a package directory that can be compiled or checked.
-Prefer the current package if it has an Odin entry point, otherwise walk upward
-to the nearest ancestor package that does."
-  (or (and (probe--directory-has-entry-point-p (probe-package-directory))
-           (probe-package-directory))
-      (probe--project-root)))
-
 (defun probe-project-directory ()
   "Return the current Odin project directory."
   (file-name-as-directory (probe--project-root)))
@@ -846,10 +838,6 @@ When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
   "Run Odin COMMAND in the current package directory."
   (probe--run-odin-command (probe-package-directory) command on-success show-output-on-success))
 
-(defun probe--odin-in-buildable-package (command &optional on-success show-output-on-success)
-  "Run Odin COMMAND in the nearest runnable package directory."
-  (probe--run-odin-command (probe--build-package-directory) command on-success show-output-on-success))
-
 (defun probe--odin-in-project (command &optional on-success show-output-on-success)
   "Run Odin COMMAND in the current project directory."
   (probe--run-odin-command (probe-project-directory) command on-success show-output-on-success))
@@ -864,7 +852,7 @@ When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
 (defun probe-build-package ()
   "Run `odin build .' in the current Odin package directory."
   (interactive)
-  (probe--odin-in-buildable-package
+  (probe--odin-in-package
    "odin build ."
    (when probe-test-after-build
      (lambda () (probe-test-package)))))
@@ -873,7 +861,7 @@ When SHOW-OUTPUT-ON-SUCCESS is non-nil, show command output in the minibuffer."
 (defun probe-check-package ()
   "Run `odin check .' in the current Odin package directory."
   (interactive)
-  (probe--odin-in-buildable-package "odin check ."))
+  (probe--odin-in-package "odin check ."))
 
 ;;;###autoload
 (defun probe-test-package ()
